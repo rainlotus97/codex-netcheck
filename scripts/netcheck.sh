@@ -18,7 +18,7 @@
 
 set -u
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CONFIG="$CODEX_HOME/config.toml"
@@ -35,6 +35,7 @@ IS_MACOS=0
 
 DO_DOCTOR=0
 DO_LIVE=0
+DO_SPEED=0
 DO_FIX=0
 DO_JSON=0
 DO_UPDATE=0
@@ -324,7 +325,7 @@ check_recent_errors() {
     add info recent_errors "跳过（无日志库或 python3）"
     return
   fi
-  local out model_cnt model_last remote_cnt
+  local out model_cnt model_last remote_cnt big_cnt
   out=$(python3 - "$p" <<'PY' 2>/dev/null
 import sqlite3, sys, time
 p = sys.argv[1]
@@ -338,7 +339,10 @@ try:
     remote = cur.execute(
         "select count(*) from logs where ts>? and feedback_log_body like '%remote/control%' and (level='WARN' or level='ERROR')",
         (cut,)).fetchone()
-    print(model[0] or 0, model[1] or 0, remote[0] or 0)
+    big = cur.execute(
+        "select count(*) from logs where ts>? and (feedback_log_body like '%tls handshake eof%' or feedback_log_body like '%Broken pipe (os error 32)%')",
+        (cut,)).fetchone()
+    print(model[0] or 0, model[1] or 0, remote[0] or 0, big[0] or 0)
 except Exception:
     print("0 0 0")
 PY
@@ -346,12 +350,16 @@ PY
   model_cnt=$(printf '%s' "$out" | awk '{print $1}')
   model_last=$(printf '%s' "$out" | awk '{print $2}')
   remote_cnt=$(printf '%s' "$out" | awk '{print $3}')
+  big_cnt=$(printf '%s' "$out" | awk '{print $4}')
   local last_txt=""
   [ "${model_last:-0}" != "0" ] && last_txt="，最近 $(format_epoch "${model_last}" 2>/dev/null || echo '?')"
   if [ "${model_cnt:-0}" -gt 0 ] 2>/dev/null; then
     add warn recent_errors "近 30 分钟有 $model_cnt 次断流${last_txt}（若来自未重启的旧进程，重启 App/终端即可）"
   else
     add ok recent_errors "近 30 分钟无断流日志"
+  fi
+  if [ "${big_cnt:-0}" -gt 0 ] 2>/dev/null; then
+    add warn large_requests "近 30 分钟有 ${big_cnt} 次 tls handshake eof / Broken pipe：多为恢复大历史（含截图）时请求体过大 + 上行慢，用 --speed 测上行"
   fi
   if [ "${remote_cnt:-0}" -gt 0 ] 2>/dev/null; then
     add info remote_control "近 30 分钟 remote-control WebSocket 失败 $remote_cnt 次（Codex App 后台进程，重启 App 后消失）"
@@ -409,6 +417,38 @@ check_live() {
     add ok live "端到端 exec 正常（无断流、无重连）"
   else
     add warn live "端到端输出无法判定：$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-120)"
+  fi
+}
+
+check_big_threads() {
+  local n
+  n=$(find "$CODEX_HOME/sessions" -name '*.jsonl' -size +50M 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${n:-0}" -gt 0 ]; then
+    add info big_threads "有 $n 个 >50MB 的超大会话（多为截图）；恢复它们会重传 MB 级请求体，上行慢的节点会超时/断流"
+  else
+    add ok big_threads "没有超大历史会话"
+  fi
+}
+
+check_upload_speed() {
+  local tmp speed kbs
+  tmp=$(mktemp "${TMPDIR:-/tmp}/netcheck-up.XXXXXX")
+  head -c 1048576 /dev/urandom > "$tmp" 2>/dev/null || true
+  speed=$(curl -s -o /dev/null -w '%{speed_upload}' --max-time 20 -x "$PROXY_URL" \
+    -X POST --data-binary @"$tmp" https://speed.cloudflare.com/__up 2>/dev/null)
+  rm -f "$tmp"
+  case "${speed:-}" in
+    ''|*[!0-9.]*)
+      add warn upload "代理上行测速失败（节点可能限制 POST 或屏蔽测速域名）"
+      return ;;
+  esac
+  kbs=$(( ${speed%.*} / 1024 ))
+  if [ "$kbs" -lt 100 ]; then
+    add warn upload "代理上行 ${kbs} KB/s（极慢）：恢复含图片的老会话必然超时/断流，建议换节点"
+  elif [ "$kbs" -lt 300 ]; then
+    add warn upload "代理上行 ${kbs} KB/s（偏慢）：大历史会话可能超时；建议换更快的节点"
+  else
+    add ok upload "代理上行 ${kbs} KB/s（够用）"
   fi
 }
 
@@ -623,8 +663,10 @@ run_checks() {
   check_proxy_reachable
   check_direct
   check_recent_errors
+  check_big_threads
   [ "$DO_DOCTOR" = "1" ] && check_doctor
   [ "$DO_LIVE" = "1" ] && check_live
+  [ "$DO_SPEED" = "1" ] && check_upload_speed
 }
 
 # ---------- 汇总 ----------
@@ -644,6 +686,8 @@ build_advice() {
   if [ "$(level_of recent_errors)" = "warn" ] && [ "$(level_of proxy_https)" = "ok" ] && [ "$(level_of config_proxy)" = "ok" ]; then
     ADVICE+=("断流日志来自旧进程的残留：重启 ChatGPT/Codex App、新开终端后再看")
   fi
+  l=$(level_of upload);           [ "$l" = "warn" ] && ADVICE+=("换一个上行更快的代理节点，然后 codex-netcheck --speed 复测（下行快 ≠ 上行快）")
+  l=$(level_of large_requests);   [ "$l" = "warn" ] && ADVICE+=("老会话含大量截图，恢复时请求体达数 MB：换上行快的节点，或在新会话继续")
   [ ${#ADVICE[@]} -eq 0 ] && ADVICE+=("无需操作，链路正常")
 }
 
@@ -739,7 +783,8 @@ codex-netcheck —— Codex 网络 / 代理链路自检与自愈
   codex-netcheck                 快速自检（默认，约 2-4 秒）
   codex-netcheck --doctor        追加 codex doctor 的 WebSocket / 连通性体检（约 15-20 秒）
   codex-netcheck --live          追加真实端到端请求（会产生一次很小的模型调用）
-  codex-netcheck --all           以上全部
+  codex-netcheck --all           以上全部（含 --speed 上行测速）
+  codex-netcheck --speed         只测代理上行速度（恢复大历史会话的关键指标）
   codex-netcheck --fix           自动补齐配置 / ~/.zshenv / GUI 代理同步器（幂等）
   codex-netcheck --fix --update  顺带把 codex 升级到最新版
   codex-netcheck --json          机器可读输出（便于 Agent 解析），人类提示走 stderr
@@ -756,7 +801,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --doctor) DO_DOCTOR=1 ;;
     --live) DO_LIVE=1 ;;
-    --all) DO_DOCTOR=1; DO_LIVE=1 ;;
+    --speed) DO_SPEED=1 ;;
+    --all) DO_DOCTOR=1; DO_LIVE=1; DO_SPEED=1 ;;
     --fix) DO_FIX=1 ;;
     --update) DO_UPDATE=1 ;;
     --json) DO_JSON=1 ;;

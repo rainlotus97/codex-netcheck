@@ -274,3 +274,62 @@ TUN 模式通过虚拟网卡接管所有 TCP 流量，确实能让不读代理�
 - 不 kill 进程，不重启 App，不修改代理软件自身配置。
 - `--fix` 只改代理相关文件；改 `config.toml` 前先生成带时间戳的备份。
 - `--update` 会执行 `codex update`，是否升级由用户显式触发。
+
+## 10. 新会话正常、老会话恢复仍然断流
+
+这是**大请求 + 上行带宽**问题，不是代理配置没生效。
+
+### 10.1 现象
+
+- 新开的会话完全正常；但恢复一个很长的旧会话时，Codex 反复重试后失败，日志里是：
+
+  ```text
+  failed to connect to websocket: IO error: tls handshake eof
+  stream disconnected before completion: IO error: Broken pipe (os error 32)
+  ```
+
+- 会话看起来"卡住"：进程还活着，但一直停在 `run_pre_sampling_compact` 前后，不返回结果。
+- 该会话的 rollout 文件很大（几十到几百 MB）。
+
+### 10.2 原因
+
+1. **老会话里有大量图片**。实测某会话含 240 张截图、合计 322MB；当前上下文窗口里的图片在恢复/预压缩时要**重新上传**，请求体可达数 MB。
+2. **代理节点的上行速度可能远低于下行**。实测同一节点：下行 2.2MB/s，上行只有约 60KB/s。几 MB 的请求要传一分多钟，Codex 的请求超时先到，于是表现为 `tls handshake eof` / `Broken pipe` / `stream disconnected`。
+3. 上下文接近窗口上限时会触发**预压缩（pre-sampling compact）**，这一步同样要发送整个上下文，体积最大、最容易失败。
+
+### 10.3 诊断
+
+```bash
+codex-netcheck                  # 看 big_threads / large_requests 两项
+codex-netcheck --speed          # 实测代理上行（1MB POST）
+```
+
+- `upload` 项：<100KB/s 基本无法恢复大历史会话；100–300KB/s 偏慢；>300KB/s 才比较稳。
+- `big_threads` 会指出有多少个 >50MB 的会话；恢复这些会话时请求体是 MB 级。
+
+也可以手动对比（注意：换测速域名只是参考，代理链路本身决定速度）：
+
+```bash
+# 下行
+curl -s -o /dev/null -w '%{speed_download}\n' -x http://127.0.0.1:7897 \
+  'https://speed.cloudflare.com/__down?bytes=10485760'
+# 上行（2MB；慢的话会跑到超时）
+head -c 2097152 /dev/urandom > /tmp/up.bin
+curl -s -o /dev/null -w '%{speed_upload}\n' --max-time 25 -x http://127.0.0.1:7897 \
+  -X POST --data-binary @/tmp/up.bin https://speed.cloudflare.com/__up
+rm -f /tmp/up.bin
+```
+
+### 10.4 处理
+
+1. **换一个上行更快的节点**，然后 `codex-netcheck --speed` 复测。下行快不代表上行快，选节点时优先看大请求能否顺利上传。
+2. **在会话层面绕开**：新开一个会话继续工作（新会话请求体小，通常稳定）；或让 Codex 先在旧会话里做总结，再把总结贴到新会话。
+3. **减少压缩时携带的图片**（可选，缓解而非根治）：
+
+   ```toml
+   [features]
+   compaction_image_budget = false
+   ```
+
+   该开关只影响压缩请求是否携带图片，不改变普通会话行为。它能把压缩请求体积降下来，但恢复时首轮上下文里的图片仍然要上传，所以**换节点仍是主要手段**。
+4. 不要把这类问题当成 `respect_system_proxy` 没生效——先用 `codex-netcheck` 确认 `config_proxy` 是 `ok`，再看 `upload` / `large_requests`。

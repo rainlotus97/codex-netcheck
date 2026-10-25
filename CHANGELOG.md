@@ -2,6 +2,19 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-10-25
+
+### Added
+
+- `--speed`：通过代理实测**上行**速度（1MB POST），并在 &lt;100KB/s / &lt;300KB/s 时给出换节点建议。
+- 检查项 `big_threads`：统计 >50MB 的超大历史会话（多为截图），提示恢复时会重传 MB 级请求体。
+- 检查项 `large_requests`：从 Codex 日志识别 `tls handshake eof` / `Broken pipe (os error 32)`。
+
+### Changed
+
+- `--all` 现在同时包含 `--speed`。
+- README / TROUBLESHOOTING 补充「新会话正常但老会话恢复断流」的完整解释与处理步骤。
+
 ## [1.1.0] - 2026-10-25
 
 ### Added
@@ -25,3 +38,4 @@
   - 日志：`~/Library/Logs/codex-netcheck-proxy-sync.log`
 - 默认 `no_proxy` 只保留通用本地/内网地址段，不含任何个人域名。
 - 修改 `config.toml` 时改为在写入前备份，避免备份到已修改内容。
+

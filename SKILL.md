@@ -51,6 +51,9 @@ codex-netcheck --port 8080       # 非默认代理端口（仅在没有系统代
 | `shell_env` | 当前终端没有代理变量 | 新开终端，或加载 shell 配置 |
 | `zshenv` / `gui_env` / `sync_agent` | 环境层缺失 | 让用户跑 `--fix` |
 | `recent_errors` | 近 30 分钟有断流日志 | 其它项全 ok → 旧进程残留，重启 App / 终端 |
+| `big_threads` | 有 >50MB 的超大会话（含大量截图） | 恢复它们会重传 MB 级请求体 |
+| `large_requests` | 近 30 分钟 `tls handshake eof` / `Broken pipe` | 大请求 + 上行慢，不是配置问题 |
+| `upload` | `--speed` 测得的代理上行速度 | <100KB/s 时换上行更快的节点 |
 | `live` | 端到端仍失败 | 再跑 `--doctor` 看 WebSocket 明细 |
 | `doctor_websocket` | WebSocket 未连接 | 期望 `HTTP 101 Switching Protocols` |
 | `system_proxy` / `gui_env` 等 info | 非 macOS 的降级项 | 按所用 shell 手动配置环境变量 |
@@ -65,6 +68,20 @@ codex-netcheck --port 8080       # 非默认代理端口（仅在没有系统代
 
 - **macOS**：完整支持 config、shell、GUI 三层，以及 `scutil --proxy` 自动探测。
 - **Linux / Windows（WSL、Git Bash）**：可运行降级检查；没有 `scutil` / `launchctl`，`system_proxy`、`zshenv`、`gui_env`、`sync_agent` 会以 info 跳过，`--fix` 只修改 config。请让用户按自己的 shell 手动配置 `http_proxy` / `https_proxy` / `no_proxy`。
+
+## 老会话恢复仍然断流（重要）
+
+如果用户说"新会话正常，但恢复旧会话还是断流/卡住"，**不要再查 respect_system_proxy**——先跑：
+
+```bash
+codex-netcheck --speed     # 代理上行速度
+codex-netcheck             # 看 big_threads / large_requests
+```
+
+- 原因通常是：老会话含大量截图（单个会话可达数十上百 MB），恢复/预压缩时要重传 MB 级请求体；而代理节点**上行**可能只有几十 KB/s（下行正常不代表上行正常）。
+- 处理：让用户换一个上行更快的节点后 `--speed` 复测；或在**新会话**继续（新会话请求体小）。
+- 可选缓解：`[features] compaction_image_budget = false`（减少压缩请求里的图片）。
+- 这类问题用 `--fix` 修不了，不要反复改配置。
 
 ## 硬性约束
 

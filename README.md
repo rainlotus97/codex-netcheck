@@ -71,6 +71,9 @@ Codex / ChatGPT.app / VS Code
 | `proxy_https` | 经代理访问 `chatgpt.com` 的状态 | 检查代理节点 / 规则 |
 | `direct` | 不经代理直连的对照结果 | 国内被重置属预期，仅作信息 |
 | `recent_errors` | 近 30 分钟 Codex 日志中的断流次数 | 重启 App / 终端，排除旧进程残留 |
+| `big_threads` | 是否存在 >50MB 的历史会话（多为截图） | 恢复这类会话会重传 MB 级请求体 |
+| `large_requests` | 近 30 分钟 `tls handshake eof` / `Broken pipe` 次数 | 大请求 + 上行慢，见 FAQ |
+| `upload` | 代理**上行**速度（`--speed`，1MB 实测） | 换上行更快的节点 |
 | `remote_control` | 近 30 分钟 remote-control WebSocket 失败 | App 后台进程问题，重启 App |
 | `doctor_websocket` | `codex doctor` 的 WebSocket 状态 | 期望 `HTTP 101 Switching Protocols` |
 | `doctor_reach` | provider 端点可达性 | 检查节点 / DNS / 规则 |
@@ -134,7 +137,8 @@ codex-netcheck                  # 快速自检（约 2-4 秒）
 codex-netcheck --json           # 机器可读输出（适合 Agent 解析）
 codex-netcheck --doctor         # 追加 codex doctor 体检（约 15-20 秒）
 codex-netcheck --live           # 追加真实端到端 exec（会产生一次很小的模型调用）
-codex-netcheck --all            # 快速自检 + doctor + live
+codex-netcheck --speed          # 只测代理上行速度（恢复大历史会话的关键指标）
+codex-netcheck --all            # 快速自检 + doctor + live + speed
 codex-netcheck --fix            # 幂等修复 config / ~/.zshenv / GUI 同步器（macOS）
 codex-netcheck --fix --update   # 若版本落后，顺带升级 codex
 codex-netcheck --port 8080      # 指定本地代理端口（默认 7897）
@@ -215,6 +219,14 @@ A：旧进程可能仍在使用修复前的环境。新开终端，并完全退�
 **Q：为什么没有 fail 还有 warn？**
 
 A：`warn` 通常来自当前终端没有加载代理变量，或近 30 分钟日志里还有旧进程的断流记录。它们不影响脚本继续检查，但值得按 `advice` 处理。
+
+**Q：新会话正常，但恢复旧的超长会话还是断流/卡住？**
+
+A：这不是代理配置问题，而是**上行带宽**。老会话里常有大量截图（实测一个会话可含 240 张、322MB 图片），恢复时要把当前上下文重新上传，请求体可达数 MB；如果代理节点下行 2MB/s 但上行只有 60KB/s，几 MB 的请求要传一分钟以上，Codex 会超时并报 `tls handshake eof` / `Broken pipe` / `stream disconnected`。处理方法：
+
+1. 跑 `codex-netcheck --speed`；上行 <100KB/s 基本无法恢复大历史会话，换一个上行更快的节点后重测；
+2. 或在**新会话**里继续（新会话请求体小，通常正常）；
+3. 工具会用 `big_threads` / `large_requests` 把这两类问题标出来。
 
 **Q：`--fix` 安全吗？**
 
