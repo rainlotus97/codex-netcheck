@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.3.1] - 2026-10-25
+
+### Fixed
+
+- `--json` 的 `version` 字段改为读取脚本真实版本（此前固定为 `1.0`）。
+- 握手抖动告警阈值从 ≥5s 收紧到 ≥4s，更早暴露拥塞节点。
+
 ## [1.3.0] - 2026-10-25
 
 ### Added

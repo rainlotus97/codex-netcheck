@@ -18,7 +18,7 @@
 
 set -u
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CONFIG="$CODEX_HOME/config.toml"
@@ -484,7 +484,7 @@ check_handshake() {
     add warn handshake "TLS 握手 ${ok}/${rounds} 成功（失败 ${fail} 次，耗时 ${min}–${max}s）：节点在丢握手，中途断流高发"
   elif [ "$(python3 -c "print(1 if float('${max}') >= 6 else 0)" 2>/dev/null || echo 0)" = "1" ]; then
     add warn handshake "TLS 握手 ${ok}/${rounds} 成功，但耗时抖动大（${min}–${max}s，平均 ${avg}s）：节点拥塞，容易撞上 tls handshake eof"
-  elif [ "$(python3 -c "print(1 if float('${jitter}') >= 5 else 0)" 2>/dev/null || echo 0)" = "1" ]; then
+  elif [ "$(python3 -c "print(1 if float('${jitter}') >= 4 else 0)" 2>/dev/null || echo 0)" = "1" ]; then
     add warn handshake "TLS 握手 ${ok}/${rounds} 成功，抖动 ${jitter}s（${min}–${max}s）：建议换更稳的节点"
   else
     add ok handshake "TLS 握手 ${ok}/${rounds} 成功，耗时 ${min}–${max}s（抖动 ${jitter}s）"
@@ -769,7 +769,7 @@ print_json() {
     printf 'V%s\n' "$VERSION"
     printf 'P%s|%s|%s\n' "$PROXY_HOST" "$PROXY_PORT" "$SYS_PROXY_ON"
     printf 'X%s\n' "$exit_code"
-  } | python3 -c '
+  } | NC_VERSION="$VERSION" python3 -c '
 import sys, json
 checks, fixes, advice = [], [], []
 proxy = {}

@@ -74,7 +74,7 @@ Codex / ChatGPT.app / VS Code
 | `big_threads` | 是否存在 >50MB 的历史会话（多为截图） | 恢复这类会话会重传 MB 级请求体 |
 | `large_requests` | 近 30 分钟 `tls handshake eof` / `Broken pipe` 次数 | 大请求 + 上行慢，见 FAQ |
 | `upload` | 代理**上行**速度（`--speed`，1MB 实测） | 换上行更快的节点 |
-| `handshake` | 连续 6 次 TLS 握手成功率与耗时抖动（`--handshake`） | 成功率不满或抖动大 → 换稳定节点 |
+| `handshake` | 连续 6 次 TLS 握手成功率与耗时抖动（`--handshake`） | 成功率不满 / 最大耗时 ≥6s / 抖动 ≥4s → 换稳定节点 |
 | `remote_control` | 近 30 分钟 remote-control WebSocket 失败 | App 后台进程问题，重启 App |
 | `doctor_websocket` | `codex doctor` 的 WebSocket 状态 | 期望 `HTTP 101 Switching Protocols` |
 | `doctor_reach` | provider 端点可达性 | 检查节点 / DNS / 规则 |
