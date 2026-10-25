@@ -333,3 +333,41 @@ rm -f /tmp/up.bin
 
    该开关只影响压缩请求是否携带图片，不改变普通会话行为。它能把压缩请求体积降下来，但恢复时首轮上下文里的图片仍然要上传，所以**换节点仍是主要手段**。
 4. 不要把这类问题当成 `respect_system_proxy` 没生效——先用 `codex-netcheck` 确认 `config_proxy` 是 `ok`，再看 `upload` / `large_requests`。
+
+## 11. 任务中途断流：`tls handshake eof` / `websocket closed by server`
+
+### 11.1 含义
+
+Codex 每次请求都会新建一条 TLS 连接（`wss://chatgpt.com/backend-api/codex/responses`，经本地代理转发）。
+`tls handshake eof` = 握手还没完成，对端（代理出口 / Cloudflare）就关闭了连接。
+`websocket closed by server before response.completed` = 握手成功，但流在完成前被服务端关闭。
+
+两者都不是 HTTP 错误，也不是 `respect_system_proxy` 没生效，而是**连接建立阶段的瞬时故障**。
+Codex 会自动重试最多 5 次（间隔约 0.2s → 3s），只有 5 次全失败才把错误抛给用户。
+
+### 11.2 判定
+
+```bash
+codex-netcheck --handshake     # 连续 6 次 TLS 握手：成功率 / 耗时范围 / 抖动
+codex-netcheck --speed         # 上行带宽
+```
+
+| 探针结果 | 结论 | 处理 |
+|---|---|---|
+| 6/6 成功，耗时 1–3s | 节点健康 | 偶发断流可忽略 |
+| 6/6 成功，但最大耗时 ≥6s 或抖动 ≥5s | 节点拥塞 | 换更稳的节点 |
+| 有失败但未全失败 | 节点在丢握手 → 中途断流高发 | 换节点 |
+| 全失败 | 节点基本不可用 | 先换节点再排查 |
+| 握手正常但 `--speed` 上行 <100KB/s | 大上下文请求会超时 | 换上行更快的节点 |
+
+### 11.3 处理
+
+1. **固定一个稳定节点**。`url-test` / 自动选择类分组会在长任务中途切换节点，正在建立的握手必然被打断；对 Codex 这种"每轮新建连接"的客户端尤其明显。
+2. 偶发 1–2 次不用管，Codex 会自己重试恢复。
+3. 同一轮连续 5 次失败：立刻换节点，再跑 `codex-netcheck --handshake` 复测。
+4. 若断流只出现在**恢复大历史会话**时，见第 10 节（大请求 + 上行慢）。
+
+### 11.4 探针实现
+
+`--handshake` 用 `openssl s_client -proxy <host:port> -connect chatgpt.com:443 -servername chatgpt.com` 连续握手，
+逐次计时，统计成功数、最小/最大/平均耗时与抖动；轮数可用 `CODEX_NETCHECK_HS_ROUNDS` 调整（默认 6）。

@@ -18,7 +18,7 @@
 
 set -u
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CONFIG="$CODEX_HOME/config.toml"
@@ -36,6 +36,7 @@ IS_MACOS=0
 DO_DOCTOR=0
 DO_LIVE=0
 DO_SPEED=0
+DO_HANDSHAKE=0
 DO_FIX=0
 DO_JSON=0
 DO_UPDATE=0
@@ -452,6 +453,44 @@ check_upload_speed() {
   fi
 }
 
+check_handshake() {
+  command -v openssl >/dev/null 2>&1 || { add info handshake "跳过（无 openssl）"; return; }
+  [ -z "${PROXY_URL:-}" ] && { add info handshake "跳过（未探测到代理）"; return; }
+  local rounds="${CODEX_NETCHECK_HS_ROUNDS:-6}"
+  local ok=0 fail=0 i t0 t1 out dur durs=""
+  for i in $(seq 1 "$rounds"); do
+    t0=$(python3 -c 'import time;print(time.time())' 2>/dev/null || echo 0)
+    out=$(run_timeout 12 openssl s_client -proxy "$PROXY_HOST:$PROXY_PORT" \
+      -connect chatgpt.com:443 -servername chatgpt.com </dev/null 2>&1 || true)
+    t1=$(python3 -c 'import time;print(time.time())' 2>/dev/null || echo 0)
+    if printf '%s' "$out" | grep -q 'Verify return code: 0'; then
+      ok=$((ok+1))
+      dur=$(python3 -c "print(round(float('${t1}') - float('${t0}'), 2))" 2>/dev/null || echo 0)
+      durs="$durs $dur"
+    else
+      fail=$((fail+1))
+    fi
+  done
+  local stats min max avg
+  stats=$(printf '%s' "$durs" | awk '{n=NF; if(n==0){print "0 0 0"; exit} min=$1; max=$1; s=0; for(i=1;i<=NF;i++){if($i<min)min=$i; if($i>max)max=$i; s+=$i}; printf "%.2f %.2f %.2f", min, max, s/n}')
+  min=$(printf '%s' "$stats" | awk '{print $1}')
+  max=$(printf '%s' "$stats" | awk '{print $2}')
+  avg=$(printf '%s' "$stats" | awk '{print $3}')
+  local jitter
+  jitter=$(python3 -c "print(round(float('${max}') - float('${min}'), 2))" 2>/dev/null || echo 0)
+  if [ "$fail" -ge "$rounds" ]; then
+    add fail handshake "TLS 握手 ${ok}/${rounds} 成功：节点基本不可用，先换节点"
+  elif [ "$fail" -gt 0 ]; then
+    add warn handshake "TLS 握手 ${ok}/${rounds} 成功（失败 ${fail} 次，耗时 ${min}–${max}s）：节点在丢握手，中途断流高发"
+  elif [ "$(python3 -c "print(1 if float('${max}') >= 6 else 0)" 2>/dev/null || echo 0)" = "1" ]; then
+    add warn handshake "TLS 握手 ${ok}/${rounds} 成功，但耗时抖动大（${min}–${max}s，平均 ${avg}s）：节点拥塞，容易撞上 tls handshake eof"
+  elif [ "$(python3 -c "print(1 if float('${jitter}') >= 5 else 0)" 2>/dev/null || echo 0)" = "1" ]; then
+    add warn handshake "TLS 握手 ${ok}/${rounds} 成功，抖动 ${jitter}s（${min}–${max}s）：建议换更稳的节点"
+  else
+    add ok handshake "TLS 握手 ${ok}/${rounds} 成功，耗时 ${min}–${max}s（抖动 ${jitter}s）"
+  fi
+}
+
 # ---------- 修复 ----------
 fix_config() {
   if [ ! -f "$CONFIG" ]; then
@@ -667,6 +706,7 @@ run_checks() {
   [ "$DO_DOCTOR" = "1" ] && check_doctor
   [ "$DO_LIVE" = "1" ] && check_live
   [ "$DO_SPEED" = "1" ] && check_upload_speed
+  [ "$DO_HANDSHAKE" = "1" ] && check_handshake
 }
 
 # ---------- 汇总 ----------
@@ -687,6 +727,7 @@ build_advice() {
     ADVICE+=("断流日志来自旧进程的残留：重启 ChatGPT/Codex App、新开终端后再看")
   fi
   l=$(level_of upload);           [ "$l" = "warn" ] && ADVICE+=("换一个上行更快的代理节点，然后 codex-netcheck --speed 复测（下行快 ≠ 上行快）")
+  l=$(level_of handshake);        { [ "$l" = "warn" ] || [ "$l" = "fail" ]; } && ADVICE+=("握手不稳 → 换一个稳定的固定节点（别用会中途切换的自动分组），再跑 codex-netcheck --handshake 复测")
   l=$(level_of large_requests);   [ "$l" = "warn" ] && ADVICE+=("老会话含大量截图，恢复时请求体达数 MB：换上行快的节点，或在新会话继续")
   [ ${#ADVICE[@]} -eq 0 ] && ADVICE+=("无需操作，链路正常")
 }
@@ -785,6 +826,7 @@ codex-netcheck —— Codex 网络 / 代理链路自检与自愈
   codex-netcheck --live          追加真实端到端请求（会产生一次很小的模型调用）
   codex-netcheck --all           以上全部（含 --speed 上行测速）
   codex-netcheck --speed         只测代理上行速度（恢复大历史会话的关键指标）
+  codex-netcheck --handshake     连续 N 次 TLS 握手探针：成功率 + 耗时抖动（诊断中途断流）
   codex-netcheck --fix           自动补齐配置 / ~/.zshenv / GUI 代理同步器（幂等）
   codex-netcheck --fix --update  顺带把 codex 升级到最新版
   codex-netcheck --json          机器可读输出（便于 Agent 解析），人类提示走 stderr
@@ -802,7 +844,8 @@ while [ $# -gt 0 ]; do
     --doctor) DO_DOCTOR=1 ;;
     --live) DO_LIVE=1 ;;
     --speed) DO_SPEED=1 ;;
-    --all) DO_DOCTOR=1; DO_LIVE=1; DO_SPEED=1 ;;
+    --handshake) DO_HANDSHAKE=1 ;;
+    --all) DO_DOCTOR=1; DO_LIVE=1; DO_SPEED=1; DO_HANDSHAKE=1 ;;
     --fix) DO_FIX=1 ;;
     --update) DO_UPDATE=1 ;;
     --json) DO_JSON=1 ;;

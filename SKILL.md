@@ -54,6 +54,7 @@ codex-netcheck --port 8080       # 非默认代理端口（仅在没有系统代
 | `big_threads` | 有 >50MB 的超大会话（含大量截图） | 恢复它们会重传 MB 级请求体 |
 | `large_requests` | 近 30 分钟 `tls handshake eof` / `Broken pipe` | 大请求 + 上行慢，不是配置问题 |
 | `upload` | `--speed` 测得的代理上行速度 | <100KB/s 时换上行更快的节点 |
+| `handshake` | `--handshake` 的握手成功率 / 抖动 | 成功率不满或抖动大 → 换稳定节点 |
 | `live` | 端到端仍失败 | 再跑 `--doctor` 看 WebSocket 明细 |
 | `doctor_websocket` | WebSocket 未连接 | 期望 `HTTP 101 Switching Protocols` |
 | `system_proxy` / `gui_env` 等 info | 非 macOS 的降级项 | 按所用 shell 手动配置环境变量 |
@@ -69,12 +70,35 @@ codex-netcheck --port 8080       # 非默认代理端口（仅在没有系统代
 - **macOS**：完整支持 config、shell、GUI 三层，以及 `scutil --proxy` 自动探测。
 - **Linux / Windows（WSL、Git Bash）**：可运行降级检查；没有 `scutil` / `launchctl`，`system_proxy`、`zshenv`、`gui_env`、`sync_agent` 会以 info 跳过，`--fix` 只修改 config。请让用户按自己的 shell 手动配置 `http_proxy` / `https_proxy` / `no_proxy`。
 
+## 任务中途断流（`tls handshake eof` / `websocket closed by server`）
+
+用户反馈"跑到一半弹出 `stream disconnected before completion: tls handshake eof`"时，**不要查配置**——这是连接建立阶段被对端关闭，属于节点/链路瞬时故障。Codex 每轮请求都会新建 TLS 连接，节点一抖就会撞上。
+
+按这个顺序做：
+
+```bash
+codex-netcheck --handshake   # 连续 6 次握手：成功率 / 耗时范围 / 抖动
+codex-netcheck --speed       # 上行带宽（大上下文请求的瓶颈）
+```
+
+判定与处理：
+
+| 探针结果 | 结论 | 处理 |
+|---|---|---|
+| 6/6 成功，1–3s | 节点健康 | 偶发 1–2 次可忽略，Codex 会自动重试 |
+| 6/6 成功，最大 ≥6s 或抖动 ≥5s | 节点拥塞 | 换更稳的节点 |
+| 出现失败 | 节点在丢握手，中途断流高发 | 换节点 |
+| 全失败 | 节点不可用 | 先换节点 |
+
+告诉用户：**固定一个稳定节点，不要用 `url-test` / 自动选择这类会中途切换的分组**（长任务中途切换必然打断正在建立的握手）。同一轮连续 5 次失败才是真正致命，偶发重试恢复的不用处理。
+
 ## 老会话恢复仍然断流（重要）
 
 如果用户说"新会话正常，但恢复旧会话还是断流/卡住"，**不要再查 respect_system_proxy**——先跑：
 
 ```bash
 codex-netcheck --speed     # 代理上行速度
+codex-netcheck --handshake # 连续 6 次 TLS 握手：成功率 + 耗时抖动（诊断中途断流）
 codex-netcheck             # 看 big_threads / large_requests
 ```
 

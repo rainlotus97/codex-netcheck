@@ -74,6 +74,7 @@ Codex / ChatGPT.app / VS Code
 | `big_threads` | 是否存在 >50MB 的历史会话（多为截图） | 恢复这类会话会重传 MB 级请求体 |
 | `large_requests` | 近 30 分钟 `tls handshake eof` / `Broken pipe` 次数 | 大请求 + 上行慢，见 FAQ |
 | `upload` | 代理**上行**速度（`--speed`，1MB 实测） | 换上行更快的节点 |
+| `handshake` | 连续 6 次 TLS 握手成功率与耗时抖动（`--handshake`） | 成功率不满或抖动大 → 换稳定节点 |
 | `remote_control` | 近 30 分钟 remote-control WebSocket 失败 | App 后台进程问题，重启 App |
 | `doctor_websocket` | `codex doctor` 的 WebSocket 状态 | 期望 `HTTP 101 Switching Protocols` |
 | `doctor_reach` | provider 端点可达性 | 检查节点 / DNS / 规则 |
@@ -138,7 +139,8 @@ codex-netcheck --json           # 机器可读输出（适合 Agent 解析）
 codex-netcheck --doctor         # 追加 codex doctor 体检（约 15-20 秒）
 codex-netcheck --live           # 追加真实端到端 exec（会产生一次很小的模型调用）
 codex-netcheck --speed          # 只测代理上行速度（恢复大历史会话的关键指标）
-codex-netcheck --all            # 快速自检 + doctor + live + speed
+codex-netcheck --handshake      # 连续 6 次 TLS 握手：成功率 + 耗时抖动（诊断中途断流）
+codex-netcheck --all            # 快速自检 + doctor + live + speed + handshake
 codex-netcheck --fix            # 幂等修复 config / ~/.zshenv / GUI 同步器（macOS）
 codex-netcheck --fix --update   # 若版本落后，顺带升级 codex
 codex-netcheck --port 8080      # 指定本地代理端口（默认 7897）
@@ -227,6 +229,14 @@ A：这不是代理配置问题，而是**上行带宽**。老会话里常有大
 1. 跑 `codex-netcheck --speed`；上行 <100KB/s 基本无法恢复大历史会话，换一个上行更快的节点后重测；
 2. 或在**新会话**里继续（新会话请求体小，通常正常）；
 3. 工具会用 `big_threads` / `large_requests` 把这两类问题标出来。
+
+**Q：任务跑到一半弹出 `stream disconnected before completion: tls handshake eof`？**
+
+A：这是**连接建立阶段**被中断（不是 HTTP 错误，也不是配置问题）：Codex 每次请求都会新建一条 TLS 连接，节点在某一瞬间拥塞、切换或重置时，握手会被对端关闭，于是报 `tls handshake eof`。
+
+- 偶发 1–2 次：Codex 会自动重试（最多 5 次），通常自己恢复；
+- 同一轮连续 5 次失败：换节点。**不要用 `url-test` / 自动选择这类会中途切换的代理分组**，长任务中途切节点必然打断正在建立的握手；
+- 量化节点健康度：`codex-netcheck --handshake`（握手成功率 + 耗时抖动）配合 `--speed`（上行）。
 
 **Q：`--fix` 安全吗？**
 

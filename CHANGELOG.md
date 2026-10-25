@@ -2,6 +2,20 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-10-25
+
+### Added
+
+- `--handshake`：经代理连续 6 次 TLS 握手探针，输出成功率、耗时范围与抖动；成功率不满 / 最大耗时 ≥6s / 抖动 ≥5s 时给出换节点建议。
+- 检查项 `handshake`，用于诊断任务中途出现的 `stream disconnected before completion: tls handshake eof`、`websocket closed by server before response.completed` 这类连接建立阶段的瞬时故障。
+- `CODEX_NETCHECK_HS_ROUNDS` 可调整握手探针轮数（默认 6）。
+
+### Changed
+
+- `--all` 现在同时包含 `--handshake`。
+- SKILL.md / prompts / README / TROUBLESHOOTING 增加「中途断流」分支与判定标准。
+- 建议固定稳定节点，避免长任务中途被自动切换的代理分组打断握手。
+
 ## [1.2.0] - 2026-10-25
 
 ### Added
