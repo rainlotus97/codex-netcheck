@@ -2,6 +2,17 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.4.0] - 2026-10-25
+
+### Added
+
+- `--images`：扫描近 48 小时的会话 rollout，找出含 >3MB 图片请求体的线程（附线程 id、cwd、会话体积），用于解释「反复 Broken pipe / tls handshake eof，但重试几次又成功」。
+- 检查项 `huge_images` / `huge_images_top`；`--all` 现在包含 `--images`。
+
+### Changed
+
+- README / SKILL / TROUBLESHOOTING 增加「大图会话导致反复断流」的说明与处理建议。
+
 ## [1.3.1] - 2026-10-25
 
 ### Fixed

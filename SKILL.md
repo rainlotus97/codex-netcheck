@@ -55,6 +55,7 @@ codex-netcheck --port 8080       # 非默认代理端口（仅在没有系统代
 | `large_requests` | 近 30 分钟 `tls handshake eof` / `Broken pipe` | 大请求 + 上行慢，不是配置问题 |
 | `upload` | `--speed` 测得的代理上行速度 | <100KB/s 时换上行更快的节点 |
 | `handshake` | `--handshake` 的握手成功率 / 抖动 | 成功率不满或抖动大 → 换稳定节点 |
+| `huge_images` | `--images` 找到的 >3MB 图片会话 | 换新会话，或缩小截图后再粘贴 |
 | `live` | 端到端仍失败 | 再跑 `--doctor` 看 WebSocket 明细 |
 | `doctor_websocket` | WebSocket 未连接 | 期望 `HTTP 101 Switching Protocols` |
 | `system_proxy` / `gui_env` 等 info | 非 macOS 的降级项 | 按所用 shell 手动配置环境变量 |
@@ -69,6 +70,14 @@ codex-netcheck --port 8080       # 非默认代理端口（仅在没有系统代
 
 - **macOS**：完整支持 config、shell、GUI 三层，以及 `scutil --proxy` 自动探测。
 - **Linux / Windows（WSL、Git Bash）**：可运行降级检查；没有 `scutil` / `launchctl`，`system_proxy`、`zshenv`、`gui_env`、`sync_agent` 会以 info 跳过，`--fix` 只修改 config。请让用户按自己的 shell 手动配置 `http_proxy` / `https_proxy` / `no_proxy`。
+
+## 反复断流但重试后成功
+
+如果用户说"报 Broken pipe / tls handshake eof，但重试几次最后又成功了"，**先跑 `codex-netcheck --images`**：
+
+- 若 `huge_images` 报 warn：说明会话里有 >3MB 的图片（实测单张 26MB、或 76 张图/237MB 的会话），Codex 每轮都会重传历史图片，上行稍慢就会中途被断。
+- 处理：建议**换新会话**继续；或让用户把截图**缩小/压缩**后再粘贴（长图先裁切）。不要改 `respect_system_proxy`。
+- 也可以用 `--images` 输出里的 thread id + cwd 指出具体是哪个会话。
 
 ## 任务中途断流（`tls handshake eof` / `websocket closed by server`）
 
@@ -99,6 +108,7 @@ codex-netcheck --speed       # 上行带宽（大上下文请求的瓶颈）
 ```bash
 codex-netcheck --speed     # 代理上行速度
 codex-netcheck --handshake # 连续 6 次 TLS 握手：成功率 + 耗时抖动（诊断中途断流）
+codex-netcheck --images    # 找出含 >3MB 大图的会话（反复 Broken pipe 的常见原因）
 codex-netcheck             # 看 big_threads / large_requests
 ```
 

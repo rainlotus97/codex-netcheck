@@ -18,7 +18,7 @@
 
 set -u
 
-VERSION="1.3.1"
+VERSION="1.4.0"
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CONFIG="$CODEX_HOME/config.toml"
@@ -37,6 +37,7 @@ DO_DOCTOR=0
 DO_LIVE=0
 DO_SPEED=0
 DO_HANDSHAKE=0
+DO_IMAGES=0
 DO_FIX=0
 DO_JSON=0
 DO_UPDATE=0
@@ -491,6 +492,67 @@ check_handshake() {
   fi
 }
 
+check_huge_images() {
+  command -v python3 >/dev/null 2>&1 || { add info huge_images "跳过（无 python3）"; return; }
+  local out
+  out=$(python3 - "$CODEX_HOME/sessions" <<'PYIMG' 2>/dev/null
+import glob, json, os, sys, time
+base = sys.argv[1]
+cut = time.time() - 48 * 3600
+rows = []
+for f in glob.glob(os.path.join(base, "**", "*.jsonl"), recursive=True):
+    try:
+        st = os.stat(f)
+    except OSError:
+        continue
+    if st.st_mtime < cut or st.st_size < 5 * 1024 * 1024:
+        continue
+    maximg = 0
+    imgs = 0
+    try:
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"input_image"' in line or '"image_url"' in line:
+                    imgs += 1
+                    if len(line) > maximg:
+                        maximg = len(line)
+    except OSError:
+        continue
+    if maximg <= 3 * 1024 * 1024:
+        continue
+    tid = cwd = "?"
+    try:
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            first = json.loads(fh.readline())
+        p = first.get("payload", first)
+        tid = str(p.get("id", "?"))
+        cwd = str(p.get("cwd", "?"))
+    except Exception:
+        pass
+    rows.append((maximg, imgs, st.st_size, tid, cwd))
+rows.sort(reverse=True)
+for maximg, imgs, size, tid, cwd in rows[:5]:
+    print("%.1f|%d|%.1f|%s|%s" % (maximg / 1048576.0, imgs, size / 1048576.0, tid, cwd))
+PYIMG
+)
+  if [ -z "$out" ]; then
+    add ok huge_images "近 48 小时会话没有 >3MB 的图片请求体"
+    return
+  fi
+  local cnt first max imgs i=0
+  cnt=$(printf '%s\n' "$out" | wc -l | tr -d ' ')
+  first=$(printf '%s\n' "$out" | head -1)
+  max=$(printf '%s' "$first" | cut -d'|' -f1)
+  imgs=$(printf '%s' "$first" | cut -d'|' -f2)
+  add warn huge_images "近 48 小时有 ${cnt} 个会话含 >3MB 图片（最大 ${max}MB / ${imgs} 张）：每轮都会重传，上行稍慢就会 Broken pipe / tls handshake eof，重试几次才成功"
+  while IFS='|' read -r mb imgs size tid cwd; do
+    [ -z "$mb" ] && continue
+    i=$((i + 1))
+    [ "$i" -gt 3 ] && break
+    add info huge_images_top "#${i} ${tid:0:13} 最大 ${mb}MB（${imgs} 张，会话 ${size}MB） → ${cwd}"
+  done <<< "$out"
+}
+
 # ---------- 修复 ----------
 fix_config() {
   if [ ! -f "$CONFIG" ]; then
@@ -707,6 +769,7 @@ run_checks() {
   [ "$DO_LIVE" = "1" ] && check_live
   [ "$DO_SPEED" = "1" ] && check_upload_speed
   [ "$DO_HANDSHAKE" = "1" ] && check_handshake
+  [ "$DO_IMAGES" = "1" ] && check_huge_images
 }
 
 # ---------- 汇总 ----------
@@ -729,6 +792,7 @@ build_advice() {
   l=$(level_of upload);           [ "$l" = "warn" ] && ADVICE+=("换一个上行更快的代理节点，然后 codex-netcheck --speed 复测（下行快 ≠ 上行快）")
   l=$(level_of handshake);        { [ "$l" = "warn" ] || [ "$l" = "fail" ]; } && ADVICE+=("握手不稳 → 换一个稳定的固定节点（别用会中途切换的自动分组），再跑 codex-netcheck --handshake 复测")
   l=$(level_of large_requests);   [ "$l" = "warn" ] && ADVICE+=("老会话含大量截图，恢复时请求体达数 MB：换上行快的节点，或在新会话继续")
+  l=$(level_of huge_images);      [ "$l" = "warn" ] && ADVICE+=("会话里有 >3MB 大图会每轮重传：换新会话，或把截图缩小/压缩后再粘贴")
   [ ${#ADVICE[@]} -eq 0 ] && ADVICE+=("无需操作，链路正常")
 }
 
@@ -827,6 +891,7 @@ codex-netcheck —— Codex 网络 / 代理链路自检与自愈
   codex-netcheck --all           以上全部（含 --speed 上行测速）
   codex-netcheck --speed         只测代理上行速度（恢复大历史会话的关键指标）
   codex-netcheck --handshake     连续 N 次 TLS 握手探针：成功率 + 耗时抖动（诊断中途断流）
+  codex-netcheck --images        扫描近 48 小时会话里的大图请求体（>3MB，解释反复断流）
   codex-netcheck --fix           自动补齐配置 / ~/.zshenv / GUI 代理同步器（幂等）
   codex-netcheck --fix --update  顺带把 codex 升级到最新版
   codex-netcheck --json          机器可读输出（便于 Agent 解析），人类提示走 stderr
@@ -845,7 +910,8 @@ while [ $# -gt 0 ]; do
     --live) DO_LIVE=1 ;;
     --speed) DO_SPEED=1 ;;
     --handshake) DO_HANDSHAKE=1 ;;
-    --all) DO_DOCTOR=1; DO_LIVE=1; DO_SPEED=1; DO_HANDSHAKE=1 ;;
+    --images) DO_IMAGES=1 ;;
+    --all) DO_DOCTOR=1; DO_LIVE=1; DO_SPEED=1; DO_HANDSHAKE=1; DO_IMAGES=1 ;;
     --fix) DO_FIX=1 ;;
     --update) DO_UPDATE=1 ;;
     --json) DO_JSON=1 ;;

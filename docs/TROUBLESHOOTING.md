@@ -371,3 +371,37 @@ codex-netcheck --speed         # 上行带宽
 
 `--handshake` 用 `openssl s_client -proxy <host:port> -connect chatgpt.com:443 -servername chatgpt.com` 连续握手，
 逐次计时，统计成功数、最小/最大/平均耗时与抖动；轮数可用 `CODEX_NETCHECK_HS_ROUNDS` 调整（默认 6）。
+
+## 12. 反复 `Broken pipe` 但重试几次又成功：会话里的大图
+
+### 12.1 现象
+
+- 每轮请求先报 `stream disconnected before completion: IO error: Broken pipe (os error 32)` 或 `tls handshake eof`；
+- 自动重试 1–5 次后，最终又能成功；
+- 换节点、改配置都没明显改善，且集中在少数几个会话。
+
+### 12.2 原因
+
+Codex 每轮请求都会把当前上下文（**包括历史图片**）重新上传。实测：
+
+| 会话 | 图片 | 会话体积 |
+|---|---|---|
+| 某会话 | 1 张，**26MB** | 28MB |
+| 某会话 | 76 张，最大 26MB | 237MB |
+
+即使节点上行有 200KB/s，26MB 也要传约 2 分钟，超过节点/服务端容忍时间就会被断开；重试偶尔能在超时前传完，于是"报错但最后成功"。
+
+### 12.3 诊断
+
+```bash
+codex-netcheck --images
+```
+
+输出 `huge_images` 警告和 top 线程（thread id / cwd / 图片数 / 会话体积）。
+
+### 12.4 处理
+
+1. **换新会话**继续（历史图片不会带过去）；
+2. 粘贴前**缩小/压缩截图**（26MB 的截图压到 1MB 以内；长图先裁切）；
+3. 已经在问题会话里的：不要反复重试恢复，直接新开会话把需要的内容贴过去；
+4. 工具的 `large_requests` / `big_threads` 会持续提示这类风险。
